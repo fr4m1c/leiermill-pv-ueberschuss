@@ -1,0 +1,420 @@
+# Experimentelle Vorabversion: bisher nur simuliert, Praxistest steht aus.
+# Das Paket kann Heizungs- und Warmwassersollwerte ändern.
+# Vor Einsatz den Status und die Hinweise in README.md beachten.
+# LEIERMILL – Viessmann PV-Zusatzanhebung, Version 2
+# E3/DC wird ausschliesslich gelesen.
+# Start: SoC >=98 %, Einspeisung >=3000 W fuer 10 Minuten.
+# Ruecknahme: Bezug >500 W ODER Entladung >700 W fuer 3 Minuten.
+# Danach mindestens 10 Minuten Pause.
+# Staffelung: Heizung 20 -> nach 30 Minuten WW 55 -> Heizung 22.
+# WW-Freigabe bleibt aus, bis die Heizstabfreigabe geklaert ist.
+# Keine einmalige WW-Ladung und keine Aenderung der Betriebsart.
+
+input_boolean:
+  leiermill_pv_automatik:
+    name: LEIERMILL PV Automatik
+    icon: mdi:solar-power
+  leiermill_pv_ww_freigabe:
+    name: LEIERMILL PV Warmwasser freigegeben
+    icon: mdi:water-boiler
+  leiermill_pv_bereit:
+    name: LEIERMILL PV Startpruefung bereit
+    initial: false
+    icon: mdi:check-circle
+
+input_text:
+  leiermill_pv_merker:
+    name: LEIERMILL PV Wiederherstellung
+    max: 255
+
+input_datetime:
+  leiermill_pv_pause_bis:
+    name: LEIERMILL PV Pause bis
+    has_date: true
+    has_time: true
+
+template:
+  - binary_sensor:
+      - name: Leiermill PV Daten gueltig
+        unique_id: leiermill_pv_daten_gueltig
+        state: >-
+          {% set ids = [
+            'sensor.beispiel_e3dc_netz_leistung',
+            'sensor.beispiel_e3dc_pv_leistung',
+            'sensor.beispiel_e3dc_batterie_leistung',
+            'sensor.beispiel_e3dc_ladezustand'
+          ] %}
+          {% set ns = namespace(ok=true) %}
+          {% for id in ids %}
+            {% if not is_number(states(id)) %}
+              {% set ns.ok = false %}
+            {% elif as_timestamp(now()) - as_timestamp(states[id].last_reported, 0) > 180 %}
+              {% set ns.ok = false %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.ok
+             and 0 <= states(ids[3]) | float(-1) <= 100
+             and states(ids[1]) | float(-1) >= 0
+             and state_attr(ids[0], 'unit_of_measurement') == 'W'
+             and state_attr(ids[1], 'unit_of_measurement') == 'W'
+             and state_attr(ids[2], 'unit_of_measurement') == 'W'
+             and state_attr(ids[3], 'unit_of_measurement') == '%' }}
+
+      - name: Leiermill PV Start stabil
+        unique_id: leiermill_pv_start_stabil
+        delay_on: '00:10:00'
+        state: >-
+          {{ is_state('input_boolean.leiermill_pv_bereit', 'on')
+             and is_state('input_boolean.leiermill_pv_automatik', 'on')
+             and is_state('binary_sensor.leiermill_pv_daten_gueltig', 'on')
+             and states('sensor.beispiel_e3dc_ladezustand') | float(0) >= 98
+             and states('sensor.beispiel_e3dc_netz_leistung') | float(0) <= -3000
+             and states('sensor.beispiel_e3dc_batterie_leistung') | float(0) >= -200
+             and states('sensor.beispiel_e3dc_pv_leistung') | float(0) > 500 }}
+
+      - name: Leiermill PV Defizit stabil
+        unique_id: leiermill_pv_defizit_stabil
+        delay_on: '00:03:00'
+        state: >-
+          {{ is_state('binary_sensor.leiermill_pv_daten_gueltig', 'on')
+             and (
+               states('sensor.beispiel_e3dc_netz_leistung') | float(0) > 500
+               or states('sensor.beispiel_e3dc_batterie_leistung') | float(0) < -700
+               or states('sensor.beispiel_e3dc_pv_leistung') | float(0) < 100
+             ) }}
+
+      - name: Leiermill PV Reserve niedrig
+        unique_id: leiermill_pv_reserve_niedrig
+        delay_on: '00:05:00'
+        state: >-
+          {{ is_state('binary_sensor.leiermill_pv_daten_gueltig', 'on')
+             and states('sensor.beispiel_e3dc_ladezustand') | float(100) < 95 }}
+
+script:
+  leiermill_pv_zurueckstellen:
+    alias: LEIERMILL PV Ausgangswerte wiederherstellen
+    mode: single
+    sequence:
+      - variables:
+          j: "{{ states('input_text.leiermill_pv_merker') | from_json({}) }}"
+      - condition: template
+        value_template: "{{ j.get('s', '') != '' }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.leiermill_pv_merker
+        data:
+          value: "{{ dict(j, s='restore') | to_json }}"
+      - action: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.leiermill_pv_pause_bis
+        data:
+          timestamp: '{{ as_timestamp(now()) + 600 }}'
+      # Ein unbestätigter Auftrag kann nach dem Timeout noch eintreffen.
+      # Erst nach beobachteter Übernahme darf das Journal gelöscht werden.
+      - variables:
+          pending_entity: >-
+            {{ {
+              'h': 'number.beispiel_vicare_normale_heiztemperatur',
+              'w': 'number.beispiel_vicare_ww_temperatur'
+            }.get(j.get('p', ''), '') }}
+      - if:
+          - condition: template
+            value_template: >-
+              {{ pending_entity != '' and
+                 states(pending_entity) | float(-999) == j.get(j.p, 0) | float }}
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.leiermill_pv_merker
+            data:
+              value: "{{ dict(j, s='restore', p='') | to_json }}"
+      - repeat:
+          for_each:
+            - entity: number.beispiel_vicare_normale_heiztemperatur
+              old: "{{ j.get('h0', 18) }}"
+              expected: "{{ j.get('h', 0) }}"
+              previous: "{{ j.get('hp', j.get('h', 0)) }}"
+            - entity: number.beispiel_vicare_ww_temperatur
+              old: "{{ j.get('w0', 48) }}"
+              expected: "{{ j.get('w', 0) }}"
+              previous: "{{ j.get('wp', j.get('w', 0)) }}"
+          sequence:
+            - if:
+                - condition: template
+                  value_template: >-
+                    {{ repeat.item.expected | float(0) > 0
+                       and is_number(states(repeat.item.entity))
+                       and states(repeat.item.entity) | float in
+                           [repeat.item.expected | float, repeat.item.previous | float]
+                       and states(repeat.item.entity) | float != repeat.item.old | float }}
+              then:
+                - action: number.set_value
+                  continue_on_error: true
+                  target:
+                    entity_id: '{{ repeat.item.entity }}'
+                  data:
+                    value: '{{ repeat.item.old }}'
+                - wait_template: >-
+                    {{ is_number(states(repeat.item.entity))
+                       and states(repeat.item.entity) | float == repeat.item.old | float }}
+                  timeout: '00:00:45'
+                  continue_on_timeout: true
+      - variables:
+          h_now: "{{ states('number.beispiel_vicare_normale_heiztemperatur') }}"
+          w_now: "{{ states('number.beispiel_vicare_ww_temperatur') }}"
+      - if:
+          - condition: template
+            value_template: >-
+              {{ (states('input_text.leiermill_pv_merker') | from_json({})).get('p', '') == ''
+                 and (j.get('h', 0) | float == 0 or
+                   (is_number(h_now) and
+                     (h_now | float == j.h0 | float or
+                      h_now | float not in [j.h | float, j.get('hp', j.h) | float])))
+                 and
+                 (j.get('w', 0) | float == 0 or
+                   (is_number(w_now) and
+                     (w_now | float == j.w0 | float or
+                      w_now | float not in [j.w | float, j.get('wp', j.w) | float]))) }}
+        then:
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.leiermill_pv_merker
+            data:
+              value: '{}'
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: leiermill_pv_restore
+        else:
+          - action: persistent_notification.create
+            data:
+              notification_id: leiermill_pv_restore
+              title: LEIERMILL – Rueckstellung ausstehend
+              message: >-
+                Ein Schreibauftrag oder eine Rückstellung ist noch offen.
+                Die Regelung prüft den Sollwert weiter. Bei einem endgültig
+                abgelehnten Auftrag bitte Verbindung und Sollwerte prüfen.
+
+  leiermill_pv_stufe_setzen:
+    alias: LEIERMILL PV Temperaturstufe setzen
+    mode: single
+    sequence:
+      - variables:
+          j: "{{ states('input_text.leiermill_pv_merker') | from_json({}) }}"
+      - condition: template
+        value_template: >-
+          {{ j.get('s', '') != '' and
+             is_state('input_boolean.leiermill_pv_automatik', 'on') and
+             is_state('binary_sensor.leiermill_pv_daten_gueltig', 'on') and
+             3 <= heizwert | float(0) <= 22 and
+             (wwwert | float(0) == 0 or 10 <= wwwert | float(0) <= 55) }}
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.leiermill_pv_merker
+        data:
+          value: >-
+            {{ dict(j, s=stufe, hp=j.get('h', 0), wp=j.get('w', 0),
+                    h=heizwert | float, w=wwwert | float,
+                    t=as_timestamp(now()) | int) | to_json }}
+      - repeat:
+          for_each:
+            - entity: number.beispiel_vicare_normale_heiztemperatur
+              key: h
+              value: '{{ heizwert }}'
+            - entity: number.beispiel_vicare_ww_temperatur
+              key: w
+              value: '{{ wwwert }}'
+          sequence:
+            - if:
+                - condition: template
+                  value_template: >-
+                    {{ repeat.item.value | float(0) > 0 and
+                       states(repeat.item.entity) | float(-999) != repeat.item.value | float }}
+              then:
+                - action: input_text.set_value
+                  target:
+                    entity_id: input_text.leiermill_pv_merker
+                  data:
+                    value: >-
+                      {{ dict(states('input_text.leiermill_pv_merker') | from_json({}),
+                              p=repeat.item.key) | to_json }}
+                - action: number.set_value
+                  continue_on_error: true
+                  target:
+                    entity_id: '{{ repeat.item.entity }}'
+                  data:
+                    value: '{{ repeat.item.value }}'
+                - wait_template: >-
+                    {{ states(repeat.item.entity) | float(-999) == repeat.item.value | float }}
+                  timeout: '00:01:00'
+                  continue_on_timeout: true
+                - if:
+                    - condition: template
+                      value_template: '{{ not wait.completed }}'
+                  then:
+                    - action: input_boolean.turn_off
+                      target:
+                        entity_id: input_boolean.leiermill_pv_automatik
+                    - action: script.leiermill_pv_zurueckstellen
+                    - action: persistent_notification.create
+                      data:
+                        notification_id: leiermill_pv_write
+                        title: LEIERMILL – Schreibpruefung fehlgeschlagen
+                        message: >-
+                          Sollwert nicht bestaetigt. Automatik ist aus.
+                          Rueckstellung wurde angefordert.
+                    - stop: Sollwert nicht bestaetigt
+                - action: input_text.set_value
+                  target:
+                    entity_id: input_text.leiermill_pv_merker
+                  data:
+                    value: >-
+                      {{ dict(states('input_text.leiermill_pv_merker') | from_json({}),
+                              p='') | to_json }}
+
+      # Nach bestaetigter Uebernahme nur noch den neuen Sollwert
+      # als eigenen Wert behandeln. Spaetere manuelle Aenderungen
+      # auf eine fruehere Stufe bleiben dadurch erhalten.
+      - variables:
+          committed: "{{ states('input_text.leiermill_pv_merker') | from_json({}) }}"
+      - action: input_text.set_value
+        target:
+          entity_id: input_text.leiermill_pv_merker
+        data:
+          value: "{{ dict(committed, hp=0, wp=0) | to_json }}"
+
+automation:
+  - id: leiermill_pv_regelung
+    alias: LEIERMILL PV Ueberschussregelung
+    mode: single
+    max_exceeded: silent
+    triggers:
+      - trigger: homeassistant
+        event: start
+        id: start
+      - trigger: time_pattern
+        seconds: '/15'
+        id: tick
+      - trigger: state
+        entity_id:
+          - input_boolean.leiermill_pv_automatik
+          - input_boolean.leiermill_pv_ww_freigabe
+        id: schalter
+    actions:
+      - variables:
+          j: "{{ states('input_text.leiermill_pv_merker') | from_json({}) }}"
+          h_entity: number.beispiel_vicare_normale_heiztemperatur
+          w_entity: number.beispiel_vicare_ww_temperatur
+          programm: >-
+            {{ state_attr('climate.beispiel_vicare_heizung',
+                          'active_vicare_program') }}
+      - choose:
+          - conditions: "{{ trigger.id == 'start' }}"
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.leiermill_pv_bereit
+              - if:
+                  - condition: template
+                    value_template: "{{ j.get('s', '') != '' }}"
+                then:
+                  - action: script.leiermill_pv_zurueckstellen
+              - delay: '00:00:30'
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.leiermill_pv_bereit
+
+          - conditions: "{{ j.get('s', '') == 'restore' }}"
+            sequence:
+              - action: script.leiermill_pv_zurueckstellen
+
+          # Bei manuellen Sollwerten Automatik deaktivieren.
+          # Unveraenderte selbst gesetzte Werte werden zurueckgenommen.
+          - conditions: >-
+              {{ j.get('s', '') != '' and (
+                 (j.get('h', 0) | float > 0 and is_number(states(h_entity)) and
+                  states(h_entity) | float != j.h | float) or
+                 (is_number(states(w_entity)) and states(w_entity) | float !=
+                  (j.w if j.get('w', 0) | float > 0 else j.w0) | float)) }}
+            sequence:
+              - action: input_boolean.turn_off
+                target:
+                  entity_id: input_boolean.leiermill_pv_automatik
+              - action: script.leiermill_pv_zurueckstellen
+              - action: persistent_notification.create
+                data:
+                  notification_id: leiermill_pv_manual
+                  title: LEIERMILL – manuelle Aenderung
+                  message: >-
+                    Ein Sollwert wurde geaendert. Abweichende manuelle
+                    Werte bleiben erhalten. Die PV-Automatik ist aus.
+
+          - conditions: >-
+              {{ j.get('s', '') != '' and (
+                 not is_state('input_boolean.leiermill_pv_automatik', 'on') or
+                 not is_state('binary_sensor.leiermill_pv_daten_gueltig', 'on') or
+                 is_state('binary_sensor.leiermill_pv_defizit_stabil', 'on') or
+                 is_state('binary_sensor.leiermill_pv_reserve_niedrig', 'on') or
+                 not is_number(states(h_entity)) or
+                 not is_number(states(w_entity)) or
+                 programm != 'normalHeating' or
+                 not is_state('climate.beispiel_vicare_heizung', 'auto') or
+                 (j.get('w', 0) | float > 0 and
+                  not is_state('input_boolean.leiermill_pv_ww_freigabe', 'on')) or
+                 (j.get('s', '') == 'warmwasser' and
+                  (as_timestamp(now()) - j.get('t', 0) | float > 5400 or
+                   not is_number(states('sensor.beispiel_vicare_ww_speichertemperatur'))))
+              ) }}
+            sequence:
+              - action: script.leiermill_pv_zurueckstellen
+
+          - conditions: >-
+              {{ j.get('s', '') == '' and
+                 is_state('input_boolean.leiermill_pv_bereit', 'on') and
+                 is_state('input_boolean.leiermill_pv_automatik', 'on') and
+                 is_state('binary_sensor.leiermill_pv_start_stabil', 'on') and
+                 programm == 'normalHeating' and
+                 is_state('climate.beispiel_vicare_heizung', 'auto') and
+                 is_number(states(h_entity)) and is_number(states(w_entity)) and
+                 3 <= states(h_entity) | float <= 22 and
+                 10 <= states(w_entity) | float <= 55 and
+                 as_timestamp(now()) >= as_timestamp(states('input_datetime.leiermill_pv_pause_bis'), 0) }}
+            sequence:
+              - action: input_text.set_value
+                target:
+                  entity_id: input_text.leiermill_pv_merker
+                data:
+                  value: >-
+                    {{ dict(s='vorbereitung', h0=states(h_entity) | float,
+                            w0=states(w_entity) | float, h=0, w=0,
+                            t=as_timestamp(now()) | int) | to_json }}
+              - action: script.leiermill_pv_stufe_setzen
+                data:
+                  stufe: heizen20
+                  heizwert: '{{ [20, states(h_entity) | float] | max }}'
+                  wwwert: 0
+
+          - conditions: >-
+              {{ j.get('s', '') == 'heizen20' and
+                 is_state('input_boolean.leiermill_pv_ww_freigabe', 'on') and
+                 is_state('binary_sensor.leiermill_pv_start_stabil', 'on') and
+                 as_timestamp(now()) - j.get('t', 0) | float >= 1800 and
+                 states('select.beispiel_vicare_warmwasser_betriebsart')
+                   in ['efficient', 'efficient_with_min_comfort'] and
+                 is_number(states('sensor.beispiel_vicare_ww_speichertemperatur')) }}
+            sequence:
+              - action: script.leiermill_pv_stufe_setzen
+                data:
+                  stufe: warmwasser
+                  heizwert: '{{ j.h }}'
+                  wwwert: 55
+
+          - conditions: >-
+              {{ j.get('s', '') == 'warmwasser' and
+                 is_state('binary_sensor.leiermill_pv_start_stabil', 'on') and
+                 states('sensor.beispiel_vicare_ww_speichertemperatur') | float(-999) >= 55 }}
+            sequence:
+              - action: script.leiermill_pv_stufe_setzen
+                data:
+                  stufe: heizen22
+                  heizwert: 22
+                  wwwert: '{{ j.w0 }}'

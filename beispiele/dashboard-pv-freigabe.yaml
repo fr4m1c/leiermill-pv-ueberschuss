@@ -1,0 +1,55 @@
+type: vertical-stack
+cards:
+  - type: entities
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.leiermill_pv_steuerung_anzeigen
+        name: PV-Überschussautomatik
+        icon: mdi:solar-power
+        tap_action:
+          action: toggle
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: input_boolean.leiermill_pv_steuerung_anzeigen
+        state: "on"
+    card:
+      type: vertical-stack
+      cards:
+        - type: markdown
+          content: >-
+            {% set status = states('input_boolean.leiermill_pv_automatik') %}
+            **PV-Freigabe:** {{ {'on': 'Ein', 'off': 'Aus'}.get(status, 'Nicht verfügbar') }}
+        - type: conditional
+          conditions:
+            - condition: or
+              conditions:
+                - condition: state
+                  entity: input_boolean.leiermill_pv_automatik
+                  state: "on"
+                - condition: state
+                  entity: input_boolean.leiermill_pv_automatik
+                  state: "off"
+          card:
+            type: horizontal-stack
+            cards:
+              - type: button
+                name: Ein
+                icon: mdi:power-on
+                tap_action:
+                  action: perform-action
+                  perform_action: input_boolean.turn_on
+                  target:
+                    entity_id: input_boolean.leiermill_pv_automatik
+                  confirmation:
+                    text: >-
+                      PV-Überschussautomatik einschalten? Bei ausreichendem
+                      Überschuss darf LEIERMILL den Heizsollwert anheben.
+              - type: button
+                name: Aus
+                icon: mdi:power-off
+                tap_action:
+                  action: perform-action
+                  perform_action: input_boolean.turn_off
+                  target:
+                    entity_id: input_boolean.leiermill_pv_automatik

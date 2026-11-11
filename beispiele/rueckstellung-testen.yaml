@@ -1,0 +1,66 @@
+alias: LEIERMILL Rückstellung testen
+description: Prüft die einmalige Anhebung von 17 auf 18 °C und die automatische Rückstellung.
+mode: single
+fields:
+  freigabe:
+    name: Praxistest freigeben
+    description: Erlaubt einmalig die Änderung des realen Heizsollwerts von 17 auf 18 °C.
+    default: false
+    selector:
+      boolean: {}
+sequence:
+  - variables:
+      heizung: number.beispiel_vicare_normale_heiztemperatur
+      merker: input_text.leiermill_pv_merker
+      ausgangswert: "{{ states(heizung) | float(-999) }}"
+      testwert: "{{ ausgangswert + 1 }}"
+  - if:
+      - condition: template
+        value_template: >-
+          {{ not (freigabe | default(false) | bool(false))
+             or ausgangswert != 17
+             or not is_state('input_boolean.leiermill_pv_automatik', 'off')
+             or not is_state(merker, '{}')
+             or not is_state('script.leiermill_pv_zurueckstellen', 'off')
+             or not is_state('automation.leiermill_pv_ueberschussregelung', 'on') }}
+    then:
+      - stop: Testfreigabe fehlt oder der Ausgangszustand hat sich geändert.
+        error: true
+  - action: input_text.set_value
+    target:
+      entity_id: input_text.leiermill_pv_merker
+    data:
+      value: >-
+        {{ dict(s='restore', p='h', h0=ausgangswert, h=testwert, w=0) | to_json }}
+  - if:
+      - condition: template
+        value_template: >-
+          {% set j = states(merker) | from_json({}) %}
+          {{ j is not mapping
+             or j.get('s') != 'restore'
+             or j.get('p') != 'h'
+             or j.get('h0') != ausgangswert
+             or j.get('h') != testwert
+             or states(heizung) | float(-999) != ausgangswert
+             or not is_state('input_boolean.leiermill_pv_automatik', 'off')
+             or not is_state('automation.leiermill_pv_ueberschussregelung', 'on') }}
+    then:
+      - stop: Rückstellmerker oder Ausgangszustand konnte nicht bestätigt werden.
+        error: true
+  - action: number.set_value
+    target:
+      entity_id: number.beispiel_vicare_normale_heiztemperatur
+    data:
+      value: "{{ testwert }}"
+  - wait_template: >-
+      {{ states(heizung) | float(-999) == ausgangswert
+         and is_state(merker, '{}')
+         and is_state('input_boolean.leiermill_pv_automatik', 'off') }}
+    timeout: "00:03:00"
+    continue_on_timeout: true
+  - if:
+      - condition: template
+        value_template: "{{ not wait.completed }}"
+    then:
+      - stop: Rückstellung nicht bestätigt. Heizsollwert und Rückstellmerker prüfen.
+        error: true

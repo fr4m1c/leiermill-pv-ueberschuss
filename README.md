@@ -1,12 +1,12 @@
 # LEIERMILL – PV-Überschuss für Wärmepumpen
 
-> **Experimentelle Vorabversion.** Diese Version wurde bislang nur in einer lokalen Simulation geprüft. Der Praxistest mit Home Assistant und einer echten Wärmepumpe steht noch aus. Das Paket kann Heizungs- und Warmwassersollwerte ändern. Für einen ersten Praxistest die Automatik nur unter Aufsicht freigeben, die Warmwasserfreigabe ausgeschaltet lassen und die Rückstellung der Sollwerte am Gerät kontrollieren.
+> **Experimentelle Vorabversion.** Die Paketvorlage wurde simuliert. An einer echten Wärmepumpe wurde die Heizungsrückstellung mit einer lokal angepassten Fassung geprüft. Der vollständige Betrieb bei PV-Überschuss steht noch aus. Das Paket kann Heizungs- und Warmwassersollwerte ändern. Für einen ersten Praxistest die Automatik nur unter Aufsicht freigeben, die Warmwasserfreigabe ausgeschaltet lassen und die Rückstellung der Sollwerte am Gerät kontrollieren.
 
 LEIERMILL ist ein Home-Assistant-YAML-Paket für die Kombination aus E3/DC und ViCare. Es liest PV-Leistung, Netzleistung, Batterieleistung und Ladezustand. Bei anhaltender Einspeisung und nahezu voller Batterie hebt es die Heiz- und optional die Warmwassersolltemperatur stufenweise an. Bei Netzbezug, Batterieentladung oder Abschaltung stellt es zuvor gespeicherte Werte wieder her.
 
 ## Status
 
-Am Gerät sind insbesondere die ViCare-Rückmeldung, das Verhalten bei Zeitprogrammwechseln und die Heizstabfreigabe zu prüfen. Die Beispieldatei enthält Platzhalter für alle anlagenspezifischen Entitäten.
+Das [Praxistestprotokoll](Praxistest.md) dokumentiert den Ablauf 17 → 18 → 17 °C und verlinkt die Dashboard-Karte sowie das Testskript. Am Gerät stehen die reguläre PV-Anhebung, das Verhalten bei Zeitprogrammwechseln und die Heizstabfreigabe noch zur Prüfung an. Die Beispieldatei enthält Platzhalter für alle anlagenspezifischen Entitäten.
 
 ## Simulation ausführen
 

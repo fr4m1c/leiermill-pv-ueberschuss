@@ -42,3 +42,4 @@ SHA256: `45032893f2e923eb89ca24f6b712c5b25aecae71483b5593f0f3f24b96679916`
 `python gesamttest.py`
 
 Die YAML bleibt unverändert. Nicht in Home Assistant als Paket installieren. Das JSON-Protokoll enthält jeden simulierten Schreibaufruf mit virtueller Zeit.
+Die Simulation benötigt keine Verbindung zu Home Assistant.
